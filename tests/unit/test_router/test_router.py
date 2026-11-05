@@ -8737,7 +8737,6 @@ class TestClaudeCodeSubagentSessionRouterBinding:
     async def test_subagents_follow_the_main_threads_latest_router_across_workers(self):
         from types import SimpleNamespace
 
-
         shared_binding = SimpleNamespace(value=None)
         shared_redis = redis_cache_double()
         shared_redis.async_get_cache = AsyncMock(side_effect=lambda key, **_: shared_binding.value)
@@ -13299,18 +13298,19 @@ async def test_a_failed_call_still_counts_one_rpm():
         end_time=None,
     )
 
-    assert _usage_by_kind(router) == {"rpm": 1}
+    assert await _usage_by_kind(router, "gpt-group") == {"rpm": 1}
 
 
-def _usage_by_kind(router: Router) -> dict[str, float]:
-    return {key.rsplit(":", 2)[-2]: value for key, value in router._core_usage_store.snapshot().items()}
+async def _usage_by_kind(router: Router, group: str) -> dict[str, int]:
+    tpm, rpm = await router.health().usage(group)
+    return {kind: value for kind, value in (("tpm", tpm), ("rpm", rpm)) if value is not None}
 
 
-async def _usage_settles(router: Router, kinds: int) -> dict[str, float]:
+async def _usage_settles(router: Router, group: str, kinds: int) -> dict[str, int]:
     async with asyncio.timeout(5):
-        while len(_usage_by_kind(router)) < kinds:
+        while len(await _usage_by_kind(router, group)) < kinds:
             await asyncio.sleep(0.01)
-    return _usage_by_kind(router)
+    return await _usage_by_kind(router, group)
 
 
 @pytest.fixture
@@ -13981,7 +13981,10 @@ async def test_call_router_callbacks_on_success():
         messages=[{"role": "user", "content": "Hello, how are you?"}],
         mock_response="Hello, I'm good.",
     )
-    assert await _usage_settles(router, kinds=2) == {"tpm": response.usage.total_tokens, "rpm": 1}
+    assert await _usage_settles(router, "gemini/gemini-2.5-flash", kinds=2) == {
+        "tpm": response.usage.total_tokens,
+        "rpm": 1,
+    }
 
 
 @pytest.mark.usefixtures("_vcr_outcome_gate", "isolate_litellm_state", "setup_and_teardown")
@@ -14005,7 +14008,7 @@ async def test_call_router_callbacks_on_failure():
             mock_response="litellm.RateLimitError",
             num_retries=0,
         )
-    assert await _usage_settles(router, kinds=1) == {"rpm": 1}
+    assert await _usage_settles(router, "gemini/gemini-2.5-flash", kinds=1) == {"rpm": 1}
 
 
 @pytest.mark.asyncio

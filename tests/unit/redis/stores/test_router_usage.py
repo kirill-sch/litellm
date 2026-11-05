@@ -13,6 +13,7 @@ from litellm.redis.stores.connection import connect
 from litellm.redis.stores.router_usage import RouterUsageStore, UsageCounter
 from litellm.redis.stores.router_usage.types import NativeCounter
 from litellm.rust_bridge._native import NativeRedisClient
+from litellm.types.utils import ModelResponse
 from tests.unit.caching.test_redis_batch import FakeNatives, fake_send
 
 T = TypeVar("T")
@@ -117,15 +118,23 @@ async def test_late_attach_keeps_the_counts_this_router_already_holds() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("flush_cache", "reset"))
 async def test_router_reset_clears_usage_and_failure_counters(operation: str) -> None:
-    router: Final = Router(model_list=[])
-    usage: Final = router._core_usage_store
-    cooldowns: Final = router._core_cooldown_cache.cooldown_store
-    counters: Final = (UsageCounter("dep", "model", "12-34", "tpm"), UsageCounter("dep", "model", "12-34", "rpm"))
-    await usage.increment_deployment("dep", "model", "12-34", 7, 1)
-    assert await usage.get_many(counters) == [7, 1]
+    router: Final = Router(
+        model_list=[
+            {
+                "model_name": "g",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-test", "rpm": 10},
+                "model_info": {"id": "dep"},
+            }
+        ]
+    )
+    cooldowns: Final = router.health().cooldowns.cooldown_store
+    served: Final = ModelResponse(usage={"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7})
+    metadata: Final = {"model_info": {"id": "dep"}, "deployment": "openai/gpt-4o", "model_group": "g"}
+    await router.increment_deployment_usage_for_response(served, {"model": "g", "metadata": metadata})
+    assert await router.health().usage("g") == (7, 1)
     assert cooldowns.increment_allowed_fails("dep", None, 30.0) == 1
     getattr(router, operation)()
-    assert await usage.get_many(counters) == [None, None]
+    assert await router.health().usage("g") == (None, None)
     assert cooldowns.increment_allowed_fails("dep", None, 30.0) == 1
 
 

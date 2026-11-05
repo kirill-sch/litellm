@@ -208,7 +208,7 @@ def test_a_sync_failure_counts_no_request(make_core: MakeCore, host: SharedLoggi
         core.completion(model="g", messages=MESSAGES)  # pyright: ignore[reportAttributeAccessIssue]  # see above
 
     assert core.health().failures_this_minute("d1") == 1
-    assert f"global_router:d1:openai/d1:rpm:{minute()}" not in core.health().usage_store.snapshot()
+    assert asyncio.run(core.health().usage("g")) == (None, None)
 
 
 # --- failure counting ------------------------------------------------------------------------------
@@ -350,6 +350,7 @@ async def test_a_wildcard_stream_counts_its_tokens_under_the_filled_model(
     _ = await collect_texts(stream)
     await settle()
 
-    counted: Final = core.health().usage_store.snapshot()
-    assert counted.get(f"global_router:w:openai/gpt-4o:tpm:{minute()}") == 12
-    assert f"global_router:w:openai/*:tpm:{minute()}" not in counted
+    filled_tpm, _ = await core.health().usage("openai/gpt-4o")
+    wildcard_tpm, _ = await core.health().usage("openai/*")
+    assert filled_tpm == 12
+    assert wildcard_tpm is None

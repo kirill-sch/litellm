@@ -65,7 +65,7 @@ from litellm.litellm_core_utils.routing_groups import validate_routing_strategy
 from litellm.litellm_core_utils.secret_redaction import redact_string
 from litellm.redis.stores.connection import connect
 from litellm.redis.stores.router_cooldowns import ROUTER_COOLDOWNS_TARGET, RouterCooldownStore
-from litellm.redis.stores.router_usage import ROUTER_USAGE_TARGET, RouterUsage, RouterUsageStore
+from litellm.redis.stores.router_usage import ROUTER_USAGE_TARGET, RouterUsage
 from litellm.router_api import (
     ROUTER_INIT_ARGS,
     SETTING_FIELDS,
@@ -1084,10 +1084,6 @@ class RustHealth(RouterHealth):
     def cooldowns(self) -> "CooldownCache":
         return self._core._cooldowns  # pyright: ignore[reportPrivateUsage]  # see above
 
-    @property
-    def usage_store(self) -> RouterUsage:
-        return self._core._usage  # pyright: ignore[reportPrivateUsage]  # see above
-
     def failures_this_minute(self, deployment_id: str) -> int:
         count: Final[object] = self.store.get_cache(f"{deployment_id}:fails", local_only=True)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # DualCache's reads are untyped
         return int(count) if isinstance(count, int | float) else 0
@@ -1395,7 +1391,7 @@ class RustCore(
         self._health_view: RustHealth | None = None
         self._cache: DualCache = host.routing_cache(config)
         redis_connection: Final = connect(self._cache.redis_cache)
-        self._usage: RouterUsage = RouterUsageStore(redis_connection)
+        self._usage: RouterUsage = host.router_usage(redis_connection)
         self._cooldowns: CooldownCache = CooldownCache(
             store=RouterCooldownStore(redis_connection),
             default_cooldown_time=self._cooldown_given,  # pyright: ignore[reportArgumentType]  # the constructor's value, as the Python core passes it

@@ -13,7 +13,6 @@ import litellm
 import pytest
 import respx
 from litellm import CustomLogger, Router
-from litellm.constants import ROUTER_USAGE_COUNTED_TOKENS_METADATA_KEY
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.router_utils.router_callbacks.track_deployment_metrics import (
@@ -546,13 +545,11 @@ async def test_router_failed_redis_increment_keeps_local_usage_without_double_co
     capture: Final = _RouterLoggingCapture("lit-3058-fail")
     router: Final = _rpm_tpm_router("lit-3058-fail")
     router.update_redis_cache(redis_cache_double())
-    metadata: Final[dict[str, object]] = {}
     request: Final = asyncio.create_task(
         router.acompletion(
             model="gpt-5-mini",
             messages=[{"role": "user", "content": "hi"}],
             mock_response="pong",
-            metadata=metadata,
             success_callback=[capture.async_log_success_event],
         )
     )
@@ -562,7 +559,6 @@ async def test_router_failed_redis_increment_keeps_local_usage_without_double_co
     response: Final = await request
 
     assert response.usage.total_tokens == 30
-    assert metadata[ROUTER_USAGE_COUNTED_TOKENS_METADATA_KEY] == response.usage.total_tokens
     assert _ratelimit_headers(response)["x-ratelimit-remaining-requests"] == 99
     assert await router.get_model_group_usage("gpt-5-mini") == (response.usage.total_tokens, 1)
 

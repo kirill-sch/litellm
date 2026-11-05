@@ -317,7 +317,7 @@ async def test_deployment_callback_on_success_counts_a_responses_websocket_turn(
         end_time=time.time(),
     )
     assert counter is not None
-    assert await router._core_usage_store.get_many((counter,)) == [17]
+    assert (await router.health().usage("gpt-5-mini"))[0] == 17
 
     realtime_key = await router.deployment_callback_on_success(
         kwargs=turn_kwargs("_arealtime"),
@@ -326,7 +326,7 @@ async def test_deployment_callback_on_success_counts_a_responses_websocket_turn(
         end_time=time.time(),
     )
     assert realtime_key is None
-    assert await router._core_usage_store.get_many((counter,)) == [17]
+    assert (await router.health().usage("gpt-5-mini"))[0] == 17
 
 
 def _io_limited_router(kind: str, **litellm_params: object) -> Router:
