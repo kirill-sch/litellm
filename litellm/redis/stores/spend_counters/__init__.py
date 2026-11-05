@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Mapping, Sequence
+from functools import partial
 from types import MappingProxyType
 from typing import Final
 
 from litellm._internal_context import with_service_target
 from litellm.caching.redis_batch import Batch
-from litellm.redis.stores._route import post_call_request, route
+from litellm.redis.stores._route import post_call_request, ready, route
 from litellm.redis.stores.connection import RedisConnection, client_of
 from litellm.redis.stores.spend_counters.handle import HandleFactory
 from litellm.redis.stores.spend_counters.types import (
@@ -54,10 +55,7 @@ __all__ = [
 ]
 
 
-async def _by_counter(
-    counters: Sequence[str], values: Awaitable[Sequence[float | None] | None] | None
-) -> Mapping[str, float | None] | None:
-    read: Final = None if values is None else await values
+def _by_counter(counters: Sequence[str], read: Sequence[float | None] | None) -> Mapping[str, float | None] | None:
     return None if read is None else MappingProxyType(dict(zip(counters, read, strict=True)))
 
 
@@ -96,7 +94,7 @@ class SpendCounterStore:
         each caller reads on its own."""
         target: Final = route(batch)
         pending: Final = self._handle.read_many(counters, target.send)
-        return _by_counter(counters, None if pending is None else target.result(pending))
+        return (ready(None) if pending is None else target.result(pending)).map(partial(_by_counter, counters))
 
     @with_service_target(SPEND_COUNTERS_TARGET)
     async def increment(self, counter: str, amount: float) -> float:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import warnings
 from collections.abc import Mapping, Sequence
 from unittest.mock import AsyncMock, MagicMock
 
@@ -110,6 +112,27 @@ async def test_counters_bound_at_auth_join_the_native_pipeline_the_armed_cooldow
     assert native.events.count("declare spend_counters") == 1
     assert [declared.counters for declared in spend.declared] == [tuple(sorted(TOKEN_KEYS - {"spend:end_user:eu"}))]
     assert spend.commands == [f"MGET {' '.join(sorted(TOKEN_KEYS - {'spend:end_user:eu'}))}"]
+
+
+@pytest.mark.asyncio
+async def test_counters_bound_at_auth_but_never_read_leave_no_coroutine_behind():
+    """A key without budgets binds its admission counters, the armed cooldown read flushes them onto the pre-call
+    pipeline, and no budget check ever reads them. The unread declaration must not warn when it is collected."""
+    natives = FakeNatives()
+    spend = FakeSpendCounters(redis={"spend:key:hashed": 3.0})
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with (
+            request_redis_batch_scope(native_factory=natives, native_send_factory=fake_send) as request,  # pyright: ignore[reportArgumentType]  # test double
+            spend_counter_batch_scope(spend.store()),
+        ):
+            bind_admission_counter_keys(TOKEN, end_user_id=None)
+            assert await request.native_result(FakeNativePending(request.native(), lambda: ())) == ()
+        gc.collect()
+
+    assert [declared.counters for declared in spend.declared] == [tuple(sorted(TOKEN_KEYS - {"spend:end_user:eu"}))]
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == []
 
 
 @pytest.mark.asyncio

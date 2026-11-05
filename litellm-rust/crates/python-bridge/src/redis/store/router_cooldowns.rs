@@ -11,12 +11,13 @@ use pyo3::{
 
 use super::{
     NativePending, PyData, PyNumber, duration, kind_error, pending, policy::router_tier_policies,
-    redis_sync, remote, request::NativeSend,
+    redis_async, redis_sync, remote, request::NativeSend,
 };
 use crate::redis::client::NativeRedisClient;
 
-/// One router's cooldown store. The router's sync completion path calls `put`, `active`,
-/// `minimum` and `increment_allowed_fails`, so those block with the GIL released like redis-py.
+/// One router's cooldown store. The router's sync completion path calls `put`, `active_sync`,
+/// `minimum` and `increment_allowed_fails`, so those block with the GIL released like redis-py; the
+/// `async_` twins return awaitables for async callers.
 #[pyclass(frozen, name = "NativeRouterCooldowns")]
 pub(crate) struct NativeRouterCooldowns(Arc<RouterCooldowns>);
 
@@ -91,6 +92,36 @@ impl NativeRouterCooldowns {
         let store = self.0.clone();
         let ttl = duration(ttl_seconds)?;
         redis_sync(py, "increment_cache", kind_error, async move {
+            store
+                .increment_allowed_fails(&model_id, suffix.as_deref(), ttl)
+                .await
+        })
+    }
+
+    fn async_put<'py>(
+        &self,
+        py: Python<'py>,
+        model_id: String,
+        cooldown: PyData<Cooldown>,
+        ttl_seconds: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let store = self.0.clone();
+        let ttl = duration(ttl_seconds)?;
+        redis_async(py, "async_set_cache", kind_error, async move {
+            store.put(&model_id, &cooldown.0, ttl).await
+        })
+    }
+
+    fn async_increment_allowed_fails<'py>(
+        &self,
+        py: Python<'py>,
+        model_id: String,
+        suffix: Option<String>,
+        ttl_seconds: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let store = self.0.clone();
+        let ttl = duration(ttl_seconds)?;
+        redis_async(py, "async_increment", kind_error, async move {
             store
                 .increment_allowed_fails(&model_id, suffix.as_deref(), ttl)
                 .await

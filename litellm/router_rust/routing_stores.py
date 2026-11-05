@@ -7,6 +7,7 @@ from typing import Final, TypeAlias
 from pydantic import TypeAdapter
 
 from litellm._internal_context import service_target, with_service_target
+from litellm.caching.redis_batch import Batch
 from litellm.litellm_core_utils.core_helpers import as_str_mapping
 from litellm.redis.stores.router_cooldowns import ROUTER_COOLDOWNS_TARGET
 from litellm.redis.stores.router_usage import ROUTER_USAGE_TARGET, RouterUsage, UsageCounter
@@ -171,8 +172,16 @@ class RoutingStores:
         target: Final = _service_target(parsed)
         if target is None:
             return None
+        store: Final = self._cooldowns.cooldown_store
         with service_target(target):
             match op, parsed:
+                case "get", CooldownKey(model_id):
+                    return Handled(_aligned((model_id,), await store.active((model_id,), batch=Batch.NONE))[0])
+                case "set", CooldownKey(model_id):
+                    await store.async_put(model_id, _cooldown_value(value), ttl or 0.0)
+                    return Handled(None)
+                case "increment", AllowedFailsKey(model_id, suffix):
+                    return Handled(await store.async_increment_allowed_fails(model_id, suffix, ttl or 0.0))
                 case "increment", UsageKey(counter):
                     by: Final = _by(value)
                     return Handled(await self._usage.increment(counter, by, int(ttl or 0)))

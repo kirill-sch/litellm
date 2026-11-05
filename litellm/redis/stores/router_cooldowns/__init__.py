@@ -5,7 +5,7 @@ from typing import Final, Protocol
 
 from litellm._internal_context import with_service_target
 from litellm.caching.redis_batch import Batch
-from litellm.redis.stores._route import as_tuple, route
+from litellm.redis.stores._route import as_tuple, ready, route
 from litellm.redis.stores.connection import RedisConnection, client_of
 from litellm.redis.stores.router_cooldowns.handle import HandleFactory
 from litellm.redis.stores.router_cooldowns.types import ROUTER_COOLDOWNS_TARGET, ActiveCooldowns, CooldownCacheValue
@@ -27,15 +27,13 @@ class RouterCooldowns(Protocol):
     def flush_local_counters(self) -> None: ...
     def put(self, model_id: str, value: CooldownCacheValue, ttl: float) -> None: ...
     def increment_allowed_fails(self, model_id: str, suffix: str | None, ttl: float) -> int: ...
+    async def async_put(self, model_id: str, value: CooldownCacheValue, ttl: float) -> None: ...
+    async def async_increment_allowed_fails(self, model_id: str, suffix: str | None, ttl: float) -> int: ...
     def active(self, model_ids: Sequence[str], *, batch: Batch) -> Awaitable[ActiveCooldowns]: ...
     def active_sync(self, model_ids: Sequence[str]) -> ActiveCooldowns: ...
     def minimum(self, model_ids: Sequence[str], default: float) -> float: ...
     def evict_local(self, model_id: str) -> None: ...
     def snapshot(self) -> Mapping[str, CooldownCacheValue]: ...
-
-
-async def _answered(active: ActiveCooldowns) -> ActiveCooldowns:
-    return active
 
 
 class RouterCooldownStore:
@@ -66,11 +64,19 @@ class RouterCooldownStore:
         return self._handle.increment_allowed_fails(model_id, suffix, ttl)
 
     @with_service_target(ROUTER_COOLDOWNS_TARGET)
+    async def async_put(self, model_id: str, value: CooldownCacheValue, ttl: float) -> None:
+        await self._handle.async_put(model_id, value, ttl)
+
+    @with_service_target(ROUTER_COOLDOWNS_TARGET)
+    async def async_increment_allowed_fails(self, model_id: str, suffix: str | None, ttl: float) -> int:
+        return await self._handle.async_increment_allowed_fails(model_id, suffix, ttl)
+
+    @with_service_target(ROUTER_COOLDOWNS_TARGET)
     def active(self, model_ids: Sequence[str], *, batch: Batch) -> Awaitable[ActiveCooldowns]:
         """Declared now on the batch ``batch`` picks, so several reads can share one trip before any is awaited.
         Without Redis it is answered from memory without suspending, as ``DualCache``'s memory read was."""
         if not self.has_redis:
-            return _answered(self.active_sync(model_ids))
+            return ready(self.active_sync(model_ids))
         target: Final = route(batch)
         return as_tuple(target.result(self._handle.active(model_ids, target.send)))
 

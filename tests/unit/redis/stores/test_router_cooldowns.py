@@ -1,8 +1,10 @@
 import ast
+import gc
 import json
 import logging
 import time
 import uuid
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Final
@@ -95,6 +97,12 @@ class FakeCooldowns:
         self.targets.append(current_service_target())
         self.fails[model_id] = self.fails.get(model_id, 0) + 1
         return self.fails[model_id]
+
+    async def async_put(self, model_id: str, cooldown: Mapping[str, object], ttl_seconds: float) -> None:
+        self.put(model_id, cooldown, ttl_seconds)
+
+    async def async_increment_allowed_fails(self, model_id: str, suffix: str | None, ttl_seconds: float) -> int:
+        return self.increment_allowed_fails(model_id, suffix, ttl_seconds)
 
     def active_sync(self, model_ids: Sequence[str]) -> list[tuple[str, CooldownCacheValue]]:
         self.targets.append(current_service_target())
@@ -273,3 +281,18 @@ async def test_an_active_read_outside_a_request_goes_out_on_its_own() -> None:
     store.put("dep", _entry(), 60.0)
 
     assert await store.active(["dep", "other"], batch=Batch.NONE) == (("dep", _entry()),)
+
+
+@pytest.mark.asyncio
+async def test_an_active_read_declared_on_the_pre_call_batch_and_never_awaited_leaves_no_coroutine() -> None:
+    """An armed cooldown prefetch the request never routes, because the limiter or a budget check rejected it first,
+    is dropped unawaited; that must not leave a coroutine behind to warn when it is collected."""
+    store: Final = RouterCooldownStore(_client(), handle=Handles())
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with request_redis_batch_scope(native_factory=FakeNatives(), native_send_factory=fake_send):  # pyright: ignore[reportArgumentType]  # test double
+            _ = store.active(["dep"], batch=Batch.PRE_CALL)
+        _ = gc.collect()
+
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == []

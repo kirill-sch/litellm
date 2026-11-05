@@ -7,7 +7,7 @@ from typing_extensions import Never
 
 from litellm._internal_context import with_service_target
 from litellm.caching.redis_batch import Batch, NativePending, active_request_redis_batches
-from litellm.redis.stores._route import Route, as_tuple, post_call_request, route
+from litellm.redis.stores._route import Reply, Route, as_tuple, post_call_request, route
 from litellm.redis.stores.connection import RedisConnection, client_of
 from litellm.redis.stores.rate_limits.handle import HandleFactory
 from litellm.redis.stores.rate_limits.types import (
@@ -67,30 +67,30 @@ async def _no_redis() -> Never:
     raise RuntimeError("the rate limiter has no Redis to run its scripts on")
 
 
-def _script(pending: NativePending[_T] | None, target: Route) -> Awaitable[_T]:
+def _script(pending: NativePending[_T] | None, target: Route) -> Reply[_T]:
     """A script's reply; one declared without Redis raises where it is awaited, like a failed script."""
-    return _no_redis() if pending is None else target.result(pending)
+    return Reply(_no_redis) if pending is None else target.result(pending)
 
 
-async def _window_counts(reply: Awaitable[list[tuple[str, int]]]) -> tuple[WindowCount, ...]:
-    return tuple(WindowCount(start, count) for start, count in await reply)
+def _window_counts(reply: list[tuple[str, int]]) -> tuple[WindowCount, ...]:
+    return tuple(WindowCount(start, count) for start, count in reply)
 
 
-async def _guarded(reply: Awaitable[tuple[bool, int]]) -> GuardedReply:
-    applied, count = await reply
+def _guarded(reply: tuple[bool, int]) -> GuardedReply:
+    applied, count = reply
     return GuardedReply(applied=applied, count=count)
 
 
-async def _atomic_reply(reply: Awaitable[tuple[NativeOverLimit | None, list[tuple[int, int]]]]) -> AtomicReply:
-    over_limit, applied = await reply
+def _atomic_reply(reply: tuple[NativeOverLimit | None, list[tuple[int, int]]]) -> AtomicReply:
+    over_limit, applied = reply
     if over_limit is None:
         return AtomicApplied(tuple(applied))
     index, current, limit = over_limit
     return AtomicOverLimit(index=index, current=current, limit=limit)
 
 
-async def _acquire_reply(reply: Awaitable[tuple[NativeOverLimit | None, list[int]]]) -> AcquireReply:
-    over_limit, in_flight = await reply
+def _acquire_reply(reply: tuple[NativeOverLimit | None, list[int]]) -> AcquireReply:
+    over_limit, in_flight = reply
     if over_limit is None:
         return GaugesAcquired(tuple(in_flight))
     index, count, limit = over_limit
@@ -145,7 +145,7 @@ class RateLimitStore:
     ) -> Awaitable[tuple[WindowCount, ...]]:
         target: Final = route(batch)
         native: Final = tuple(map(native_counter, counters))
-        return _window_counts(_script(self._handle.sliding_window(native, now, window_size, target.send), target))
+        return _script(self._handle.sliding_window(native, now, window_size, target.send), target).map(_window_counts)
 
     @with_service_target(RATE_LIMITS_TARGET)
     def read_counters(self, counters: Sequence[RateLimitCounter], *, batch: Batch) -> Awaitable[tuple[str | None, ...]]:
@@ -158,7 +158,7 @@ class RateLimitStore:
     def check_and_increment(self, counters: Sequence[AtomicCounter], *, batch: Batch) -> Awaitable[AtomicReply]:
         target: Final = route(batch)
         native: Final = tuple(map(native_atomic, counters))
-        return _atomic_reply(_script(self._handle.check_and_increment(native, target.send), target))
+        return _script(self._handle.check_and_increment(native, target.send), target).map(_atomic_reply)
 
     @with_service_target(RATE_LIMITS_TARGET)
     def guarded_increment(
@@ -172,9 +172,9 @@ class RateLimitStore:
     ) -> Awaitable[GuardedReply]:
         target: Final = route(batch)
         native: Final = native_counter(counter)
-        return _guarded(
-            _script(self._handle.guarded_increment(native, expected_window_start, amount, ttl, target.send), target)
-        )
+        return _script(
+            self._handle.guarded_increment(native, expected_window_start, amount, ttl, target.send), target
+        ).map(_guarded)
 
     @with_service_target(RATE_LIMITS_TARGET)
     def parallel_acquire(
@@ -182,7 +182,8 @@ class RateLimitStore:
     ) -> Awaitable[AcquireReply]:
         target: Final = route(batch)
         native: Final = tuple((native_scope(scope), limit) for scope, limit in gauges)
-        return _acquire_reply(_script(self._handle.parallel_acquire(native, slot_ttl, slot_id, target.send), target))
+        pending: Final = self._handle.parallel_acquire(native, slot_ttl, slot_id, target.send)
+        return _script(pending, target).map(_acquire_reply)
 
     @with_service_target(RATE_LIMITS_TARGET)
     def parallel_release(
