@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Final
 
 from pydantic import TypeAdapter
 
+from litellm._logging import verbose_logger
 from litellm.constants import (
     REDIS_CIRCUIT_BREAKER_ENABLED,
     REDIS_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
@@ -44,8 +45,12 @@ def connect(redis_cache: RedisCache | None) -> RedisConnection | None:
         _merge_redis_kwargs,  # pyright: ignore[reportPrivateUsage]  # Reuse the shared internal kwargs normalizer
     )
 
+    redis_kwargs: Final = _merge_redis_kwargs(_KWARGS.validate_python(settings.redis_kwargs))
+    if redis_kwargs.get("ssl_validate_ocsp") is True:
+        verbose_logger.warning("The native Redis client cannot honor ssl_validate_ocsp, so Redis is not connected")
+        return None
     client: Final = NativeRedisClient.connect(
-        _merge_redis_kwargs(_KWARGS.validate_python(settings.redis_kwargs)),
+        redis_kwargs,
         default_ttl_seconds=settings.default_ttl,
         namespace=settings.namespace,
         breaker=_breaker(),
