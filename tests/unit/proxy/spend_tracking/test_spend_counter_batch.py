@@ -136,6 +136,24 @@ async def test_counters_bound_at_auth_but_never_read_leave_no_coroutine_behind()
 
 
 @pytest.mark.asyncio
+async def test_counters_bound_at_auth_cost_no_redis_read_when_the_request_ends_before_reading_them():
+    """A request denied between binding its admission counters and reading them closes its scope with the
+    counters unread. Closing must not send them on a trip of their own that nothing will read."""
+    natives = FakeNatives()
+    spend = FakeSpendCounters(redis={"spend:key:hashed": 3.0})
+
+    with (
+        request_redis_batch_scope(native_factory=natives, native_send_factory=fake_send) as request,  # pyright: ignore[reportArgumentType]  # test double
+        spend_counter_batch_scope(spend.store()),
+    ):
+        bind_admission_counter_keys(TOKEN, end_user_id=None)
+        await request.flush_all()
+
+    assert spend.declared == []
+    assert spend.commands == []
+
+
+@pytest.mark.asyncio
 async def test_counters_bound_after_the_native_batch_went_out_ride_the_next_one():
     natives = FakeNatives()
     spend = FakeSpendCounters(redis={"spend:key:hashed": 3.0, "spend:org:org": 4.0})

@@ -899,7 +899,7 @@ async def test_awaiting_a_native_read_runs_the_native_hooks_then_flushes_the_nat
     assert [built.post_call_deadline for built in natives.built] == [7]
     assert declared_only == []
     assert answer == "answer"
-    assert native.events == ["hook", "flush_pre", "resolve", "hook", "flush_pre"]
+    assert native.events == ["hook", "flush_pre", "resolve", "flush_pre"]
 
 
 @pytest.mark.asyncio
