@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import Iterator
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Final
+from typing import Final, Protocol, cast  # noqa: TID251  # narrows public exception attributes from the legacy mapper
 
 import pytest
 from pydantic import TypeAdapter
@@ -424,3 +424,34 @@ async def test_sync_call_raises_like_python_without_logging(server: RecordingSer
 
     assert not server.requests
     assert not recorder.names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_provider", (False, True))
+@pytest.mark.parametrize("status", (401, 429))
+async def test_inferred_provider_is_preserved_in_native_public_errors(
+    server: RecordingServer, explicit_provider: bool, status: int
+) -> None:
+    server.default_response = ResponseSpec(
+        body={"error": {"type": "provider_error", "message": "synthetic refusal"}}, status=status
+    )
+    error_type: Final = litellm.AuthenticationError if status == 401 else litellm.RateLimitError
+    with pytest.raises(error_type) as raised:
+        await call(
+            server, model="deepseek/deepseek-v4-flash", custom_llm_provider="deepseek" if explicit_provider else None
+        )
+    assert_served_natively(server)
+    public_error: Final = cast(
+        _ProviderError, raised.value
+    )  # cast-ok: the exception mapper supplies these public attributes
+    assert public_error.llm_provider == "deepseek"
+    assert public_error.model == "deepseek/deepseek-v4-flash"
+    assert "synthetic refusal" in str(raised.value)
+
+
+class _ProviderError(Protocol):
+    @property
+    def llm_provider(self) -> str: ...
+
+    @property
+    def model(self) -> str: ...

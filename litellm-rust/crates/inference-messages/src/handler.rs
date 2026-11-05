@@ -77,7 +77,10 @@ pub(super) async fn execute(
         &request.wire,
     );
     let identity = request.identity.clone();
-    let (output, source) = match cache.lookup().await {
+    let hit = cache.lookup().await.filter(|(output, _)| {
+        matches!(output, MessagesCallResponse::Stream { .. }) == request.stream
+    });
+    let (output, source) = match hit {
         Some(hit) => hit,
         None => (
             call_provider(&route.http, request, context).await?,

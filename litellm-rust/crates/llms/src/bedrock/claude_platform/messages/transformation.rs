@@ -421,4 +421,70 @@ mod tests {
         assert_eq!(wire.get("aws_region_name"), None);
         assert_eq!(wire.get(UNSUPPORTED_OVERRIDE), None);
     }
+
+    #[rstest]
+    #[case::request(json!({"workspace_id": "request"}), json!({"workspace_id": "deployment"}), "request")]
+    #[case::deployment(json!({}), json!({"workspace_id": "deployment"}), "deployment")]
+    #[case::blank_request(json!({"workspace_id": " "}), json!({"workspace_id": "deployment"}), "deployment")]
+    #[case::environment(json!({}), json!({}), "environment")]
+    fn workspace_sources_select_one_header_without_changing_unrelated_headers(
+        #[case] optional: Value,
+        #[case] deployment: Value,
+        #[case] expected: &str,
+    ) {
+        let optional_params = serde_json::from_value(optional).unwrap();
+        let params = LitellmParams {
+            extra: serde_json::from_value(deployment).unwrap(),
+            ..Default::default()
+        };
+        let environment = BEDROCK_CLAUDE_PLATFORM_MESSAGES_CONFIG
+            .validate_environment(
+                vec![("x-routing".into(), "keep".into())],
+                Some("key"),
+                "claude-test",
+                &optional_params,
+                &params,
+                &|name| (name == WORKSPACE_ENVS[0]).then(|| "environment".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            environment.headers,
+            vec![
+                ("x-routing".into(), "keep".into()),
+                (WORKSPACE_HEADER.into(), expected.into()),
+            ]
+        );
+    }
+
+    #[rstest]
+    fn custom_unsupported_fields_do_not_remove_nested_tool_data_or_extensions() {
+        let input = json!({
+            "model": "claude_platform/claude-test", "max_tokens": 16, "messages": [],
+            "workspace_id": "workspace", "aws_region_name": "us-west-2",
+            "claude_platform_unsupported_params": ["temperature"],
+            "temperature": 0.5,
+            "context_management": {"edits": [{"type": "clear_thinking_20251015"}]},
+            "tools": [{"name": "lookup", "input_schema": {
+                "type": "object", "properties": {"workspace_id": {"type": "string"}},
+                "aws_region_name": "application-data", "temperature": 7
+            }}],
+            "future": null
+        });
+        let transformed = BEDROCK_CLAUDE_PLATFORM_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(
+                serde_json::from_value(input.clone()).unwrap(),
+                &MessagesTransformContext::default(),
+            )
+            .unwrap();
+        let wire = BEDROCK_CLAUDE_PLATFORM_MESSAGES_CONFIG
+            .wire_body(serde_json::to_value(transformed).unwrap());
+        assert_eq!(
+            wire,
+            json!({
+                "model": "claude-test", "max_tokens": 16, "messages": [],
+                "context_management": input["context_management"],
+                "tools": input["tools"], "future": null
+            })
+        );
+    }
 }

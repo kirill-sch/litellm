@@ -19879,3 +19879,51 @@ def test_router_warns_when_a_deployment_enforces_endpoints_without_a_list(caplog
 
     assert "Deployment 'embed-from-config' sets enforce_supported_endpoints without" in caplog.text
     assert "Deployment 'embed-from-api' sets enforce_supported_endpoints without" in caplog.text
+
+
+class _PartitionedMessagesSSE(httpx.AsyncByteStream):
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self._chunks: Final = chunks
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("isolate_litellm_state", "_router_httpx_transport")
+@pytest.mark.parametrize("split_at", [0, 12, 24, 50], ids=["whole", "event-name", "event-end", "data"])
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+async def test_messages_stream_preserves_generated_content_across_partitions_before_a_retryable_error(
+    respx_mock: respx.MockRouter, split_at: int, newline: bytes
+) -> None:
+    content: Final = _anthropic_messages_content_chunk("original").replace(b"\n", newline)
+    chunks: Final = (
+        _anthropic_messages_message_start_chunk().replace(b"\n", newline),
+        *((content[:split_at], content[split_at:]) if split_at else (content,)),
+        _anthropic_messages_overloaded_error_chunk().replace(b"\n", newline),
+    )
+    route: Final = respx_mock.post("https://messages-partitions.test/v1/messages").mock(
+        side_effect=lambda _: httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=_PartitionedMessagesSSE(chunks)
+        )
+    )
+    router: Final = Router(
+        model_list=[{
+            "model_name": "messages",
+            "litellm_params": {
+                "model": "anthropic/claude-sonnet-5-5", "api_key": "fake-key",
+                "api_base": "https://messages-partitions.test",
+            },
+        }],
+        num_retries=1,
+        retry_after=0,
+        disable_cooldowns=True,
+    )
+    stream: Final = await router.aanthropic_messages(
+        model="messages", messages=[{"role": "user", "content": "hello"}], max_tokens=64, stream=True
+    )
+    received: Final = b"".join([chunk async for chunk in stream])
+
+    assert received == b"".join(chunks)
+    assert route.call_count == 1
